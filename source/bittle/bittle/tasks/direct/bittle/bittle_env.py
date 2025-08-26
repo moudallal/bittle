@@ -32,6 +32,26 @@ class BittleEnv(DirectRLEnv):
         self.actions = torch.zeros((self.cfg.scene.num_envs, self.cfg.action_space), device=self.device)
         self.previous_actions = torch.zeros_like(self.actions)
 
+        self._episode_sums = {
+            key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            for key in [
+                "lin_vel_xy_dt",
+                "ref_z_dt",
+                "lin_vel_z_dt",
+                "stability_dt",
+                "pose_similarity_dt",
+                "joint_accel_dt",
+                "lin_vel_xy",
+                "ref_z",
+                "lin_vel_z",
+                "stability",
+                "pose_similarity",
+                "joint_accel",
+                "total_reward_dt",
+                "total_reward",
+            ]
+        }
+
     def _setup_scene(self):
         self.robot = Articulation(self.cfg.robot_cfg)
 
@@ -246,6 +266,26 @@ class BittleEnv(DirectRLEnv):
             # weights["torque_penalty"] * r_torques +
             weights["joint_accel"] * r_accel
         )
+
+        rewards = {
+            "lin_vel_xy_dt": weights["lin_vel"] * r_lin_vel * self.step_dt,
+            "ref_z_dt": weights["height"] * r_z * self.step_dt,
+            "lin_vel_z_dt": weights["lin_vel_z"] * r_lin_vel_z * self.step_dt,
+            "stability_dt": weights["stability"] * r_roll_pitch * self.step_dt,
+            "pose_similarity_dt": weights["pose"] * r_pose_similarity * self.step_dt,
+            "joint_accel_dt": weights["joint_accel"] * r_accel * self.step_dt,
+            "lin_vel_xy": weights["lin_vel"] * r_lin_vel,
+            "ref_z": weights["height"] * r_z,
+            "lin_vel_z": weights["lin_vel_z"] * r_lin_vel_z,
+            "stability": weights["stability"] * r_roll_pitch,
+            "pose_similarity": weights["pose"] * r_pose_similarity,
+            "joint_accel": weights["joint_accel"] * r_accel,
+            "total_reward_dt": total_reward * self.step_dt,
+            "total_reward": total_reward,
+        }
+
+        for key, value in rewards.items():
+            self._episode_sums[key] += value
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -313,6 +353,15 @@ class BittleEnv(DirectRLEnv):
         self.robot.write_joint_velocity_to_sim(default_q_dot, self.dof_idx, env_ids)
 
         self._visualize_markers()
+
+        # Logging
+        extras = dict()
+        for key in self._episode_sums.keys():
+            episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
+            extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
+            self._episode_sums[key][env_ids] = 0.0
+        self.extras["log"] = dict()
+        self.extras["log"].update(extras)
 
     def _visualize_markers(self):
         # Correct bittle orientation quaternion
