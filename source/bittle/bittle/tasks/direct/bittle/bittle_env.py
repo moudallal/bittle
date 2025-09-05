@@ -189,7 +189,7 @@ class BittleEnv(DirectRLEnv):
         r_z = -(z - z_ref) ** 2
 
         # 4. Pose similarity reward
-        q_default = torch.zeros_like(joint_pos)  # or set manually to natural stance
+        q_default = torch.zeros_like(joint_pos)
         r_pose_similarity = -torch.sum((joint_pos - q_default) ** 2, dim=1)
 
         # 5. Action rate penalty
@@ -249,21 +249,13 @@ class BittleEnv(DirectRLEnv):
         r_torques = torch.sum(torch.square(self.robot.data.applied_torque), dim=1)
         # joint acceleration
         r_accel = torch.sum(torch.square(self.robot.data.joint_acc), dim=1)
-
-        # --- Combine with weights ---
+        
         total_reward = (
-            # weights["lin_vel"]      * r_lin_vel +
-            # weights["ang_vel"]      * r_ang_vel +
-            weights["height"]       * r_z +
-            weights["pose"]         * r_pose_similarity +
-            # weights["action_rate"]  * r_action_rate +
-            weights["lin_vel_z"]    * r_lin_vel_z +
-            weights["stability"]    * r_roll_pitch +
-            # weights["alive"]        * r_alive + 
-            # weights["knee-height"]  * r_knee +
-            # weights["foot-contact"] * r_foot + 
             weights["vel_tracking"] * r_vel +
-            # weights["torque_penalty"] * r_torques +
+            weights["height"]       * r_z +
+            weights["lin_vel_z"]    * r_lin_vel_z +
+            weights["pose"]         * r_pose_similarity +
+            weights["stability"]    * r_roll_pitch +
             weights["joint_accel"] * r_accel
         )
 
@@ -289,23 +281,23 @@ class BittleEnv(DirectRLEnv):
         return total_reward
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        # --- Termination thresholds ---
+        # --- termination thresholds ---
         roll_thresh = 0.5
         pitch_thresh = 0.4
         height_thresh = 0.05   # meters (base fell too low)
 
-        # --- Get relevant state ---
+        # --- get relevant state ---
         root_quat_w = self.robot.data.root_quat_w
         base_pos_z = self.robot.data.root_pos_w[:, 2]
         roll, pitch, _ = math_utils.euler_xyz_from_quat(root_quat_w)
 
-        # --- Check termination conditions ---
+        # --- check termination conditions ---
         roll_violation = torch.abs(roll) > roll_thresh
         pitch_violation = torch.abs(pitch) > pitch_thresh
         height_violation = base_pos_z < height_thresh
         progress_done = self.episode_length_buf >= self.max_episode_length - 1
 
-        # --- Combine conditions ---
+        # --- combine conditions ---
         reset_due_to_fall = roll_violation | pitch_violation | height_violation
         # reset_due_to_fall = height_violation
         done_envs = progress_done | reset_due_to_fall
@@ -314,25 +306,25 @@ class BittleEnv(DirectRLEnv):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         
-        # 1. Reset robot state
+        # reset robot state
         # self.robot.reset(env_ids)
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
 
-        # 2. Reset action buffers
+        # reset action buffers
         # self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
         self.actions[env_ids] = 0.1 * torch.randn((len(env_ids), self.cfg.action_space), device=self.device)
 
-        # 3. Resample directional command velocities (vx, vy)
+        # resample directional command velocities
         self.commands[env_ids] = torch.randn((len(env_ids), 3)).cuda()
         self.commands[env_ids,0] = 0.0
         self.commands[env_ids,1] = 0.1
         self.commands[env_ids,-1] = 0.0
         self.commands[env_ids] = self.commands[env_ids]/torch.linalg.norm(self.commands[env_ids], dim=1, keepdim=True)
 
-        # Recalculate the orientations for the command markers with the new commands
+        # recalculate the orientations for the command markers with the new commands
         ratio = self.commands[env_ids][:, 1] / (self.commands[env_ids][:, 0] + 1E-8)
         gzero = torch.where(self.commands[env_ids] > 0, True, False)
         lzero = torch.where(self.commands[env_ids] < 0, True, False)
@@ -341,7 +333,7 @@ class BittleEnv(DirectRLEnv):
         offsets = torch.pi * plus - torch.pi * minus
         self.yaws[env_ids] = torch.atan(ratio).reshape(-1, 1) + offsets.reshape(-1, 1)
 
-        # Set the root state for the reset envs
+        # set the root state for the reset envs
         default_root_state = self.robot.data.default_root_state[env_ids]
         default_root_state[:, :3] += self.scene.env_origins[env_ids]
 
@@ -354,7 +346,7 @@ class BittleEnv(DirectRLEnv):
 
         self._visualize_markers()
 
-        # Logging
+        # logging
         extras = dict()
         for key in self._episode_sums.keys():
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
@@ -365,7 +357,6 @@ class BittleEnv(DirectRLEnv):
 
     def _visualize_markers(self):
         # Correct bittle orientation quaternion
-        # correction_quat = math_utils.euler_angles_to_quat(torch.tensor([0.0, 0.0, -math.pi / 2], device=self.device))  # (3,) tensor
         correction_yaws = torch.ones((self.cfg.scene.num_envs, 1)).cuda() * (math.pi / 2)
         correction_quat = math_utils.quat_from_angle_axis(correction_yaws, self.up_dir).squeeze()
 
